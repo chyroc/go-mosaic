@@ -1,4 +1,4 @@
-package main
+package mosaic
 
 import (
 	"bytes"
@@ -6,11 +6,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/boltdb/bolt"
-	"github.com/esrrhs/go-engine/src/common"
-	"github.com/esrrhs/go-engine/src/loggo"
-	"github.com/esrrhs/go-engine/src/threadpool"
-	"golang.org/x/image/draw"
 	"image"
 	"image/color"
 	_ "image/gif"
@@ -19,7 +14,9 @@ import (
 	"image/png"
 	_ "image/png"
 	"io/ioutil"
+	"log"
 	"math"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -27,12 +24,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/OneOfOne/xxhash"
+	"github.com/boltdb/bolt"
+	"golang.org/x/image/draw"
 )
 
 func main() {
-
-	defer common.CrashLog()
-
 	src := flag.String("src", "", "src image path")
 	target := flag.String("target", "", "target image path")
 	lib := flag.String("lib", "", "image lib path")
@@ -64,17 +62,10 @@ func main() {
 		return
 	}
 
-	level := loggo.LEVEL_INFO
-	loggo.Ini(loggo.Config{
-		Level:  level,
-		Prefix: "mosaic",
-		MaxDay: 3,
-	})
-	loggo.Info("start...")
-
-	loggo.Info("src %s", *src)
-	loggo.Info("target %s", *target)
-	loggo.Info("lib %s", *lib)
+	log.Printf("start...")
+	log.Printf("src %s", *src)
+	log.Printf("target %s", *target)
+	log.Printf("lib %s", *lib)
 
 	err, srcimg, cachemap := parse_src(*src, *scalealg, *srcsize)
 	if err != nil {
@@ -97,25 +88,25 @@ type CacheInfo struct {
 }
 
 func parse_src(src string, scalealg string, srcsize int) (error, image.Image, *sync.Map) {
-	loggo.Info("parse_src %s", src)
+	log.Printf("parse_src %s", src)
 
 	reader, err := os.Open(src)
 	if err != nil {
-		loggo.Error("parse_src Open fail %s %s", src, err)
+		log.Printf("parse_src Open fail %s %s", src, err)
 		return err, nil, nil
 	}
 	defer reader.Close()
 
 	fi, err := reader.Stat()
 	if err != nil {
-		loggo.Error("parse_src Stat fail %s %s", src, err)
+		log.Printf("parse_src Stat fail %s %s", src, err)
 		return err, nil, nil
 	}
 	filesize := fi.Size()
 
 	img, _, err := image.Decode(reader)
 	if err != nil {
-		loggo.Error("parse_src Decode image fail %s %s", src, err)
+		log.Printf("parse_src Decode image fail %s %s", src, err)
 		return err, nil, nil
 	}
 
@@ -123,7 +114,7 @@ func parse_src(src string, scalealg string, srcsize int) (error, image.Image, *s
 
 	lenx := img.Bounds().Dx()
 	leny := img.Bounds().Dy()
-	len := common.MaxOfInt(lenx, leny)
+	len := maxInt(lenx, leny)
 	if len > srcsize {
 		newlenx := lenx * srcsize / len
 		newleny := leny * srcsize / len
@@ -174,18 +165,18 @@ func parse_src(src string, scalealg string, srcsize int) (error, image.Image, *s
 		pixelnum[maxpixel] = 0
 	}
 
-	loggo.Info("parse_src cache top pixel num=%d max=%d", num, top)
+	log.Printf("parse_src cache top pixel num=%d max=%d", num, top)
 	for i := 2; i <= top; i++ {
 		cachemap.Range(func(key, value interface{}) bool {
 			ci := value.(*CacheInfo)
 			if ci.num == i {
-				loggo.Info("parse_src cache top pixel [%s]=%d", key, i)
+				log.Printf("parse_src cache top pixel [%s]=%d", key, i)
 			}
 			return true
 		})
 	}
 
-	loggo.Info("parse_src ok %s %d %d*%d", src, filesize, img.Bounds().Dx(), img.Bounds().Dy())
+	log.Printf("parse_src ok %s %d %d*%d", src, filesize, img.Bounds().Dx(), img.Bounds().Dy())
 	return nil, img, &cachemap
 }
 
@@ -225,9 +216,9 @@ type ColorData struct {
 }
 
 func load_lib(lib string, workernum int, database string, pixelsize int, scalealg string, checkhash bool, libname string) error {
-	loggo.Info("load_lib %s", lib)
+	log.Printf("load_lib %s", lib)
 
-	loggo.Info("load_lib start ini database")
+	log.Printf("load_lib start ini database")
 	var colordata []ColorData
 	for i := 0; i <= 255; i++ {
 		for j := 0; j <= 255; j++ {
@@ -246,13 +237,13 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 		}
 	}
 
-	loggo.Info("load_lib ini database ok")
+	log.Printf("load_lib ini database ok")
 
-	loggo.Info("load_lib start load database")
+	log.Printf("load_lib start load database")
 
-	db, err := bolt.Open(database, 0600, nil)
+	db, err := bolt.Open(database, 0o600, nil)
 	if err != nil {
-		loggo.Error("load_lib Open database fail %s %s", database, err)
+		log.Printf("load_lib Open database fail %s %s", database, err)
 		return err
 	}
 	defer db.Close()
@@ -263,7 +254,7 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 	db.Update(func(tx *bolt.Tx) error {
 		_, err := tx.CreateBucketIfNotExists([]byte(bucket_name))
 		if err != nil {
-			loggo.Error("load_lib Open database CreateBucketIfNotExists fail %s %s %s", database, bucket_name, err)
+			log.Printf("load_lib Open database CreateBucketIfNotExists fail %s %s %s", database, bucket_name, err)
 			os.Exit(1)
 		}
 		b := tx.Bucket([]byte(bucket_name))
@@ -289,7 +280,7 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 			k, v []byte
 		}
 
-		tp := threadpool.NewThreadPool(workernum, 16, func(in interface{}) {
+		tp := NewThreadPool(workernum, 16, func(in interface{}) {
 			defer atomic.AddInt32(&doneload, 1)
 			defer atomic.AddInt32(&loading, -1)
 
@@ -302,7 +293,7 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 			var fi FileInfo
 			err = dec.Decode(&fi)
 			if err != nil {
-				loggo.Error("load_lib Open database Decode fail %s %s %s", database, string(lf.k), err)
+				log.Printf("load_lib Open database Decode fail %s %s %s", database, string(lf.k), err)
 				lock.Lock()
 				defer lock.Unlock()
 				need_del = append(need_del, string(lf.k))
@@ -311,7 +302,7 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 
 			osfi, err := os.Stat(fi.Filename)
 			if err != nil && os.IsNotExist(err) {
-				loggo.Error("load_lib Open Filename IsNotExist, need delete %s %s %s", database, fi.Filename, err)
+				log.Printf("load_lib Open Filename IsNotExist, need delete %s %s %s", database, fi.Filename, err)
 				lock.Lock()
 				defer lock.Unlock()
 				need_del = append(need_del, string(lf.k))
@@ -323,21 +314,21 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 			if checkhash {
 				reader, err := os.Open(fi.Filename)
 				if err != nil {
-					loggo.Error("load_lib Open fail %s %s %s", database, fi.Filename, err)
+					log.Printf("load_lib Open fail %s %s %s", database, fi.Filename, err)
 					return
 				}
 				defer reader.Close()
 
 				bytes, err := ioutil.ReadAll(reader)
 				if err != nil {
-					loggo.Error("load_lib ReadAll fail %s %s %s", database, fi.Filename, err)
+					log.Printf("load_lib ReadAll fail %s %s %s", database, fi.Filename, err)
 					return
 				}
 
-				hashstr := common.GetXXHashString(string(bytes))
+				hashstr := GetXXHashString(string(bytes))
 
 				if hashstr != fi.Hash {
-					loggo.Error("load_lib hash diff need delete %s %s %s %s", database, fi.Filename, hashstr, fi.Hash)
+					log.Printf("load_lib hash diff need delete %s %s %s %s", database, fi.Filename, hashstr, fi.Hash)
 					lock.Lock()
 					defer lock.Unlock()
 					need_del = append(need_del, string(lf.k))
@@ -347,9 +338,8 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 		})
 
 		b.ForEach(func(k, v []byte) error {
-
 			for {
-				ret := tp.AddJobTimeout(int(common.RandInt()), LoadFileInfo{k, v}, 10)
+				ret := tp.AddJobTimeout(int(rand.Int()), LoadFileInfo{k, v}, 10)
 				if ret {
 					atomic.AddInt32(&loading, 1)
 					break
@@ -365,7 +355,7 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 				}
 				donesizem := doneloadsize / 1024 / 1024
 				dataspeed := int(donesizem) / (int(time.Now().Sub(beginload)) / int(time.Second))
-				loggo.Info("load speed=%.2f/s percent=%d%% time=%s thead=%d progress=%d/%d data=%dM dataspeed=%dM/s", speed, int(doneload)*100/dbtotal, left,
+				log.Printf("load speed=%.2f/s percent=%d%% time=%s thead=%d progress=%d/%d data=%dM dataspeed=%dM/s", speed, int(doneload)*100/dbtotal, left,
 					loading, doneload, dbtotal, donesizem, dataspeed)
 			}
 
@@ -385,13 +375,12 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 		return nil
 	})
 
-	loggo.Info("load_lib load database ok")
+	log.Printf("load_lib load database ok")
 
-	loggo.Info("load_lib start get image file list")
+	log.Printf("load_lib start get image file list")
 	imagefilelist := make([]CalFileInfo, 0)
 	cached := 0
 	filepath.Walk(lib, func(path string, f os.FileInfo, err error) error {
-
 		if f == nil || f.IsDir() {
 			return nil
 		}
@@ -405,7 +394,7 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 
 		abspath, err := filepath.Abs(path)
 		if err != nil {
-			loggo.Error("load_lib get Abs fail %s %s %s", database, path, err)
+			log.Printf("load_lib get Abs fail %s %s %s", database, path, err)
 			return nil
 		}
 
@@ -423,9 +412,9 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 		return nil
 	})
 
-	loggo.Info("load_lib get image file list ok %d cache %d", len(imagefilelist), cached)
+	log.Printf("load_lib get image file list ok %d cache %d", len(imagefilelist), cached)
 
-	loggo.Info("load_lib start calc image avg color %d", len(imagefilelist))
+	log.Printf("load_lib start calc image avg color %d", len(imagefilelist))
 	var worker int32
 	begin := time.Now()
 	last := time.Now()
@@ -438,7 +427,7 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 
 	scale := getScaler(scalealg)
 
-	tp := threadpool.NewThreadPool(workernum, 16, func(in interface{}) {
+	tp := NewThreadPool(workernum, 16, func(in interface{}) {
 		i := in.(int)
 		calc_avg_color(&imagefilelist[i], &worker, &done, &donesize, scale, pixelsize)
 	})
@@ -446,7 +435,7 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 	i := 0
 	for worker != 0 {
 		if i < len(imagefilelist) {
-			ret := tp.AddJobTimeout(int(common.RandInt()), i, 10)
+			ret := tp.AddJobTimeout(int(rand.Int()), i, 10)
 			if ret {
 				atomic.AddInt32(&worker, 1)
 				i++
@@ -463,15 +452,15 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 			}
 			donesizem := donesize / 1024 / 1024
 			dataspeed := int(donesizem) / (int(time.Now().Sub(begin)) / int(time.Second))
-			loggo.Info("calc speed=%.2f/s percent=%d%% time=%s thead=%d progress=%d/%d saved=%d data=%dM dataspeed=%dM/s", speed, int(done)*100/len(imagefilelist),
+			log.Printf("calc speed=%.2f/s percent=%d%% time=%s thead=%d progress=%d/%d saved=%d data=%dM dataspeed=%dM/s", speed, int(done)*100/len(imagefilelist),
 				left, int(worker), int(done), len(imagefilelist), save_inter, donesizem, dataspeed)
 		}
 	}
 	tp.Stop()
 
-	loggo.Info("load_lib calc image avg color ok %d %d", len(imagefilelist), done)
+	log.Printf("load_lib calc image avg color ok %d %d", len(imagefilelist), done)
 
-	loggo.Info("load_lib start save image avg color")
+	log.Printf("load_lib start save image avg color")
 
 	maxcolornum := 0
 	totalnum := 0
@@ -479,7 +468,6 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 		b := tx.Bucket([]byte(bucket_name))
 
 		b.ForEach(func(k, v []byte) error {
-
 			var b bytes.Buffer
 			b.Write(v)
 
@@ -487,7 +475,7 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 			var fi FileInfo
 			err = dec.Decode(&fi)
 			if err != nil {
-				loggo.Error("load_lib Open database Decode fail %s %s %s", database, string(k), err)
+				log.Printf("load_lib Open database Decode fail %s %s %s", database, string(k), err)
 				return nil
 			}
 
@@ -504,10 +492,10 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 		return nil
 	})
 
-	loggo.Info("load_lib save image avg color ok total %d max %d", totalnum, maxcolornum)
+	log.Printf("load_lib save image avg color ok total %d max %d", totalnum, maxcolornum)
 
 	if totalnum <= 0 {
-		loggo.Error("load_lib no pic in lib %s", database)
+		log.Printf("load_lib no pic in lib %s", database)
 		return errors.New("no pic")
 	}
 
@@ -518,22 +506,22 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 		c    color.RGBA
 		num  int
 	}{
-		{"Black", common.Black, 0},
-		{"White", common.White, 0},
-		{"Red", common.Red, 0},
-		{"Lime", common.Lime, 0},
-		{"Blue", common.Blue, 0},
-		{"Yellow", common.Yellow, 0},
-		{"Cyan", common.Cyan, 0},
-		{"Magenta", common.Magenta, 0},
-		{"Silver", common.Silver, 0},
-		{"Gray", common.Gray, 0},
-		{"Maroon", common.Maroon, 0},
-		{"Olive", common.Olive, 0},
-		{"Green", common.Green, 0},
-		{"Purple", common.Purple, 0},
-		{"Teal", common.Teal, 0},
-		{"Navy", common.Navy, 0},
+		{"Black", Black, 0},
+		{"White", White, 0},
+		{"Red", Red, 0},
+		{"Lime", Lime, 0},
+		{"Blue", Blue, 0},
+		{"Yellow", Yellow, 0},
+		{"Cyan", Cyan, 0},
+		{"Magenta", Magenta, 0},
+		{"Silver", Silver, 0},
+		{"Gray", Gray, 0},
+		{"Maroon", Maroon, 0},
+		{"Olive", Olive, 0},
+		{"Green", Green, 0},
+		{"Purple", Purple, 0},
+		{"Teal", Teal, 0},
+		{"Navy", Navy, 0},
 	}
 
 	for _, data := range colordata {
@@ -544,7 +532,7 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 			min := 0
 			mindistance := math.MaxFloat64
 			for index, cg := range colorgourp {
-				diff := common.ColorDistance(color.RGBA{data.r, data.g, data.b, 0}, cg.c)
+				diff := ColorDistance(color.RGBA{data.r, data.g, data.b, 0}, cg.c)
 				if diff < mindistance {
 					min = index
 					mindistance = diff
@@ -560,19 +548,19 @@ func load_lib(lib string, workernum int, database string, pixelsize int, scaleal
 		if tmpcolornum[i] == 1 {
 			str = make_string(tmpcolorone[i].r, tmpcolorone[i].g, tmpcolorone[i].b)
 		}
-		loggo.Info("load_lib avg color num distribution %d = %d %s", i, tmpcolornum[i], str)
+		log.Printf("load_lib avg color num distribution %d = %d %s", i, tmpcolornum[i], str)
 	}
 
 	maxcolorgroupnum := 0
 	maxcolorgroupindex := 0
 	for index, cg := range colorgourp {
-		loggo.Info("load_lib avg color color distribution %s = %d", cg.name, cg.num)
+		log.Printf("load_lib avg color color distribution %s = %d", cg.name, cg.num)
 		if cg.num > maxcolorgroupnum {
 			maxcolorgroupnum = cg.num
 			maxcolorgroupindex = index
 		}
 	}
-	loggo.Info("load_lib avg color color max %s %d", colorgourp[maxcolorgroupindex].name, colorgourp[maxcolorgroupindex].num)
+	log.Printf("load_lib avg color color max %s %d", colorgourp[maxcolorgroupindex].name, colorgourp[maxcolorgroupindex].num)
 
 	return nil
 }
@@ -586,14 +574,13 @@ func make_string(r uint8, g uint8, b uint8) string {
 }
 
 func calc_img(src image.Image, filename string, scaler draw.Scaler, pixelsize int) (image.Image, error) {
-
 	bounds := src.Bounds()
 
-	len := common.MinOfInt(bounds.Dx(), bounds.Dy())
+	len := minInt(bounds.Dx(), bounds.Dy())
 	startx := bounds.Min.X + (bounds.Dx()-len)/2
 	starty := bounds.Min.Y + (bounds.Dy()-len)/2
-	endx := common.MinOfInt(startx+len, bounds.Max.X)
-	endy := common.MinOfInt(starty+len, bounds.Max.Y)
+	endx := minInt(startx+len, bounds.Max.X)
+	endy := minInt(starty+len, bounds.Max.Y)
 
 	if startx != bounds.Min.X || starty != bounds.Min.Y || endx != bounds.Max.X || endy != bounds.Max.Y {
 		dst := image.NewRGBA(image.Rectangle{image.Point{0, 0}, image.Point{len, len}})
@@ -603,13 +590,13 @@ func calc_img(src image.Image, filename string, scaler draw.Scaler, pixelsize in
 
 	bounds = src.Bounds()
 	if bounds.Dx() != bounds.Dy() {
-		loggo.Error("calc_img cult image fail %s %d %d", filename, bounds.Dx(), bounds.Dy())
+		log.Printf("calc_img cult image fail %s %d %d", filename, bounds.Dx(), bounds.Dy())
 		return nil, errors.New("bounds error")
 	}
 
-	len = common.MinOfInt(bounds.Dx(), bounds.Dy())
+	len = minInt(bounds.Dx(), bounds.Dy())
 	if len < pixelsize {
-		loggo.Error("calc_img image too small %s %d %d", filename, len, pixelsize)
+		log.Printf("calc_img image too small %s %d %d", filename, len, pixelsize)
 		return nil, errors.New("too small")
 	}
 
@@ -624,7 +611,6 @@ func calc_img(src image.Image, filename string, scaler draw.Scaler, pixelsize in
 }
 
 func calc_avg_color(cfi *CalFileInfo, worker *int32, done *int32, donesize *int64, scaler draw.Scaler, pixelsize int) {
-	defer common.CrashLog()
 	defer atomic.AddInt32(worker, -1)
 	defer atomic.AddInt32(done, 1)
 	defer func() {
@@ -633,14 +619,14 @@ func calc_avg_color(cfi *CalFileInfo, worker *int32, done *int32, donesize *int6
 
 	reader, err := os.Open(cfi.fi.Filename)
 	if err != nil {
-		loggo.Error("calc_avg_color Open fail %s %s", cfi.fi.Filename, err)
+		log.Printf("calc_avg_color Open fail %s %s", cfi.fi.Filename, err)
 		return
 	}
 	defer reader.Close()
 
 	fi, err := reader.Stat()
 	if err != nil {
-		loggo.Error("calc_avg_color Stat fail %s %s", cfi.fi.Filename, err)
+		log.Printf("calc_avg_color Stat fail %s %s", cfi.fi.Filename, err)
 		return
 	}
 	filesize := fi.Size()
@@ -648,13 +634,13 @@ func calc_avg_color(cfi *CalFileInfo, worker *int32, done *int32, donesize *int6
 
 	img, _, err := image.Decode(reader)
 	if err != nil {
-		loggo.Error("calc_avg_color Decode image fail %s %s", cfi.fi.Filename, err)
+		log.Printf("calc_avg_color Decode image fail %s %s", cfi.fi.Filename, err)
 		return
 	}
 
 	img, err = calc_img(img, cfi.fi.Filename, scaler, pixelsize)
 	if err != nil {
-		loggo.Error("calc_avg_color calc_img image fail %s %s", cfi.fi.Filename, err)
+		log.Printf("calc_avg_color calc_img image fail %s %s", cfi.fi.Filename, err)
 		return
 	}
 
@@ -677,28 +663,27 @@ func calc_avg_color(cfi *CalFileInfo, worker *int32, done *int32, donesize *int6
 
 	readerhash, err := os.Open(cfi.fi.Filename)
 	if err != nil {
-		loggo.Error("calc_avg_color Open fail %s %s", cfi.fi.Filename, err)
+		log.Printf("calc_avg_color Open fail %s %s", cfi.fi.Filename, err)
 		return
 	}
 	defer readerhash.Close()
 
 	b, err := ioutil.ReadAll(readerhash)
 	if err != nil {
-		loggo.Error("calc_avg_color ReadAll fail %s %d", cfi.fi.Filename, pixelsize)
+		log.Printf("calc_avg_color ReadAll fail %s %d", cfi.fi.Filename, pixelsize)
 		return
 	}
 
 	cfi.fi.R = uint8(sumR / count)
 	cfi.fi.G = uint8(sumG / count)
 	cfi.fi.B = uint8(sumB / count)
-	cfi.fi.Hash = common.GetXXHashString(string(b))
+	cfi.fi.Hash = GetXXHashString(string(b))
 	cfi.ok = true
 
 	return
 }
 
 func save_to_database(worker *int32, imagefilelist *[]CalFileInfo, db *bolt.DB, save_inter *int, bucket_name string) {
-	defer common.CrashLog()
 	defer atomic.AddInt32(worker, -1)
 
 	i := 0
@@ -717,7 +702,7 @@ func save_to_database(worker *int32, imagefilelist *[]CalFileInfo, db *bolt.DB, 
 				enc := gob.NewEncoder(&b)
 				err := enc.Encode(&cfi.fi)
 				if err != nil {
-					loggo.Error("calc_avg_color Encode FileInfo fail %s %s", cfi.fi.Filename, err)
+					log.Printf("calc_avg_color Encode FileInfo fail %s %s", cfi.fi.Filename, err)
 					return
 				}
 
@@ -739,11 +724,11 @@ func save_to_database(worker *int32, imagefilelist *[]CalFileInfo, db *bolt.DB, 
 }
 
 func gen_target(srcimg image.Image, target string, workernum int, database string, pixelsize int, maxsize int, scalealg string, libname string, cachemap *sync.Map) error {
-	loggo.Info("gen_target %s", target)
+	log.Printf("gen_target %s", target)
 
-	db, err := bolt.Open(database, 0600, nil)
+	db, err := bolt.Open(database, 0o600, nil)
 	if err != nil {
-		loggo.Error("gen_target Open database fail %s %s", database, err)
+		log.Printf("gen_target Open database fail %s %s", database, err)
 		return err
 	}
 	defer db.Close()
@@ -769,11 +754,11 @@ func gen_target(srcimg image.Image, target string, workernum int, database strin
 
 	outputfilesize := lenx * leny * 4 / 1024 / 1024 / 1024
 	if outputfilesize > maxsize {
-		loggo.Error("gen_target too big %s %dG than %dG", target, outputfilesize, maxsize)
+		log.Printf("gen_target too big %s %dG than %dG", target, outputfilesize, maxsize)
 		return errors.New("too big")
 	}
 
-	loggo.Info("gen_target start gen pixel %s %dG max %dG", target, outputfilesize, maxsize)
+	log.Printf("gen_target start gen pixel %s %dG max %dG", target, outputfilesize, maxsize)
 
 	dst := image.NewRGBA(image.Rectangle{image.Point{0, 0}, image.Point{lenx, leny}})
 
@@ -783,7 +768,7 @@ func gen_target(srcimg image.Image, target string, workernum int, database strin
 		c color.RGBA
 	}
 
-	tp := threadpool.NewThreadPool(workernum, 16, func(in interface{}) {
+	tp := NewThreadPool(workernum, 16, func(in interface{}) {
 		defer atomic.AddInt32(&done, 1)
 		defer atomic.AddInt32(&doing, -1)
 		gi := in.(GenInfo)
@@ -796,7 +781,7 @@ func gen_target(srcimg image.Image, target string, workernum int, database strin
 			r, g, b = r>>8, g>>8, b>>8
 
 			for {
-				ret := tp.AddJobTimeout(int(common.RandInt()), GenInfo{x: x, y: y, c: color.RGBA{uint8(r), uint8(g), uint8(b), 0}}, 10)
+				ret := tp.AddJobTimeout(int(rand.Int()), GenInfo{x: x, y: y, c: color.RGBA{uint8(r), uint8(g), uint8(b), 0}}, 10)
 				if ret {
 					atomic.AddInt32(&doing, 1)
 					break
@@ -810,7 +795,7 @@ func gen_target(srcimg image.Image, target string, workernum int, database strin
 				if speed > 0 {
 					left = time.Duration(int64(float64(total-int(done))/speed) * int64(time.Second)).String()
 				}
-				loggo.Info("gen speed=%.2f/s percent=%d%% time=%s thead=%d progress=%d/%d cached=%d cached-percent=%d%%", speed, int(done)*100/total,
+				log.Printf("gen speed=%.2f/s percent=%d%% time=%s thead=%d progress=%d/%d cached=%d cached-percent=%d%%", speed, int(done)*100/total,
 					left, int(doing), int(done), total, cached, int(cached)*100/total)
 			}
 		}
@@ -822,12 +807,12 @@ func gen_target(srcimg image.Image, target string, workernum int, database strin
 
 	tp.Stop()
 
-	loggo.Info("gen_target gen pixel ok %s", target)
+	log.Printf("gen_target gen pixel ok %s", target)
 
-	loggo.Info("gen_target start write file %s", target)
+	log.Printf("gen_target start write file %s", target)
 	dstFile, err := os.Create(target)
 	if err != nil {
-		loggo.Error("gen_target Create fail %s %s", target, err)
+		log.Printf("gen_target Create fail %s %s", target, err)
 		return err
 	}
 	defer dstFile.Close()
@@ -838,17 +823,16 @@ func gen_target(srcimg image.Image, target string, workernum int, database strin
 		err = jpeg.Encode(dstFile, dst, &jpeg.Options{Quality: 100})
 	}
 	if err != nil {
-		loggo.Error("gen_target Encode fail %s %s", target, err)
+		log.Printf("gen_target Encode fail %s %s", target, err)
 		return err
 	}
 
-	loggo.Info("gen_target write file ok %s", target)
+	log.Printf("gen_target write file ok %s", target)
 
 	return nil
 }
 
 func gen_target_pixel(src color.RGBA, x int, y int, dst *image.RGBA, db *bolt.DB, bucket_name string, pixelsize int, scalealg string, cachemap *sync.Map, cached *int32) {
-
 	var minimgs []image.Image
 
 	key := make_string(src.R, src.G, src.B)
@@ -873,7 +857,6 @@ func gen_target_pixel(src color.RGBA, x int, y int, dst *image.RGBA, db *bolt.DB
 			db.View(func(tx *bolt.Tx) error {
 				b := tx.Bucket([]byte(bucket_name))
 				b.ForEach(func(k, v []byte) error {
-
 					var b bytes.Buffer
 					b.Write(v)
 
@@ -881,7 +864,7 @@ func gen_target_pixel(src color.RGBA, x int, y int, dst *image.RGBA, db *bolt.DB
 					var fi FileInfo
 					err := dec.Decode(&fi)
 					if err != nil {
-						loggo.Error("gen_target_pixel database Decode fail %s %s", string(k), err)
+						log.Printf("gen_target_pixel database Decode fail %s %s", string(k), err)
 						os.Exit(1)
 					}
 
@@ -891,7 +874,7 @@ func gen_target_pixel(src color.RGBA, x int, y int, dst *image.RGBA, db *bolt.DB
 					}
 
 					tmp := color.RGBA{fi.R, fi.G, fi.B, 0}
-					diff := common.ColorDistance(src, tmp)
+					diff := ColorDistance(src, tmp)
 					if diff < mindiff {
 						mindiff = diff
 						mindiffnames = mindiffnames[:0]
@@ -907,14 +890,14 @@ func gen_target_pixel(src color.RGBA, x int, y int, dst *image.RGBA, db *bolt.DB
 			for _, mindiffname := range mindiffnames {
 				reader, err := os.Open(mindiffname)
 				if err != nil {
-					loggo.Error("gen_target_pixel Open fail %s %s", mindiffname, err)
+					log.Printf("gen_target_pixel Open fail %s %s", mindiffname, err)
 					os.Exit(1)
 				}
 				defer reader.Close()
 
 				minimg, _, err := image.Decode(reader)
 				if err != nil {
-					loggo.Error("gen_target_pixel Decode fail %s %s", mindiffname, err)
+					log.Printf("gen_target_pixel Decode fail %s %s", mindiffname, err)
 					return
 				}
 
@@ -922,7 +905,7 @@ func gen_target_pixel(src color.RGBA, x int, y int, dst *image.RGBA, db *bolt.DB
 
 				minimg, err = calc_img(minimg, mindiffname, scale, pixelsize)
 				if err != nil {
-					loggo.Error("gen_target_pixel calc_img image fail %s %s", mindiffname, err)
+					log.Printf("gen_target_pixel calc_img image fail %s %s", mindiffname, err)
 					return
 				}
 
@@ -947,9 +930,10 @@ func gen_target_pixel(src color.RGBA, x int, y int, dst *image.RGBA, db *bolt.DB
 	}
 
 	var minimg image.Image
-	minimg = minimgs[common.RandInt31n(len(minimgs))]
 
-	if common.RandInt()%2 == 0 {
+	minimg = minimgs[int(rand.Int31n(int32(len(minimgs))))]
+
+	if rand.Int()%2 == 0 {
 		flippedImg := image.NewRGBA(minimg.Bounds())
 		for j := 0; j < minimg.Bounds().Dy(); j++ {
 			for i := 0; i < minimg.Bounds().Dx(); i++ {
@@ -960,4 +944,141 @@ func gen_target_pixel(src color.RGBA, x int, y int, dst *image.RGBA, db *bolt.DB
 	}
 
 	draw.Copy(dst, image.Point{x * pixelsize, y * pixelsize}, minimg, minimg.Bounds(), draw.Over, nil)
+}
+
+// MaxOfInt
+func maxInt(x, y int) int {
+	if x > y {
+		return x
+	}
+	return y
+}
+
+func minInt(x, y int) int {
+	if x < y {
+		return x
+	}
+	return y
+}
+
+func GetXXHashString(s string) string {
+	h := xxhash.New64()
+	h.WriteString(s)
+	return strconv.FormatUint(h.Sum64(), 10)
+}
+
+var (
+	Black   = color.RGBA{0, 0, 0, 0}
+	White   = color.RGBA{255, 255, 255, 0}
+	Red     = color.RGBA{255, 0, 0, 0}
+	Lime    = color.RGBA{0, 255, 0, 0}
+	Blue    = color.RGBA{0, 0, 255, 0}
+	Yellow  = color.RGBA{255, 255, 0, 0}
+	Cyan    = color.RGBA{0, 255, 255, 0}
+	Magenta = color.RGBA{255, 0, 255, 0}
+	Silver  = color.RGBA{192, 192, 192, 0}
+	Gray    = color.RGBA{128, 128, 128, 0}
+	Maroon  = color.RGBA{128, 0, 0, 0}
+	Olive   = color.RGBA{128, 128, 0, 0}
+	Green   = color.RGBA{0, 128, 0, 0}
+	Purple  = color.RGBA{128, 0, 128, 0}
+	Teal    = color.RGBA{0, 128, 128, 0}
+	Navy    = color.RGBA{0, 0, 128, 0}
+)
+
+func ColorDistance(c1 color.RGBA, c2 color.RGBA) float64 {
+	return math.Sqrt((float64(c1.R)-float64(c2.R))*(float64(c1.R)-float64(c2.R)) +
+		(float64(c1.G)-float64(c2.G))*(float64(c1.G)-float64(c2.G)) +
+		(float64(c1.B)-float64(c2.B))*(float64(c1.B)-float64(c2.B)))
+}
+
+type ThreadPool struct {
+	workResultLock sync.WaitGroup
+	max            int
+	exef           func(interface{})
+	ca             []chan interface{}
+	control        chan int
+	stat           ThreadPoolStat
+}
+
+type ThreadPoolStat struct {
+	Datalen    []int
+	Pushnum    []int
+	Processnum []int
+}
+
+func NewThreadPool(max int, buffer int, exef func(interface{})) *ThreadPool {
+	ca := make([]chan interface{}, max)
+	control := make(chan int, max)
+	for index := range ca {
+		ca[index] = make(chan interface{}, buffer)
+	}
+
+	stat := ThreadPoolStat{}
+	stat.Datalen = make([]int, max)
+	stat.Pushnum = make([]int, max)
+	stat.Processnum = make([]int, max)
+
+	tp := &ThreadPool{max: max, exef: exef, ca: ca, control: control, stat: stat}
+
+	for index := range ca {
+		go tp.run(index)
+	}
+
+	return tp
+}
+
+func absInt(x int) int {
+	return int(math.Abs(float64(x)))
+}
+
+func (tp *ThreadPool) AddJob(hash int, v interface{}) {
+	tp.ca[absInt(hash)%len(tp.ca)] <- v
+	tp.stat.Pushnum[absInt(hash)%len(tp.ca)]++
+}
+
+func (tp *ThreadPool) AddJobTimeout(hash int, v interface{}, timeoutms int) bool {
+	select {
+	case tp.ca[absInt(hash)%len(tp.ca)] <- v:
+		tp.stat.Pushnum[absInt(hash)%len(tp.ca)]++
+		return true
+	case <-time.After(time.Duration(timeoutms) * time.Millisecond):
+		return false
+	}
+}
+
+func (tp *ThreadPool) Stop() {
+	for i := 0; i < tp.max; i++ {
+		tp.control <- i
+	}
+	tp.workResultLock.Wait()
+}
+
+func (tp *ThreadPool) run(index int) {
+	tp.workResultLock.Add(1)
+	defer tp.workResultLock.Done()
+
+	for {
+		select {
+		case <-tp.control:
+			return
+		case v := <-tp.ca[index]:
+			tp.exef(v)
+			tp.stat.Processnum[index]++
+		}
+	}
+}
+
+func (tp *ThreadPool) GetStat() ThreadPoolStat {
+	for index := range tp.ca {
+		tp.stat.Datalen[index] = len(tp.ca[index])
+	}
+	return tp.stat
+}
+
+func (tp *ThreadPool) ResetStat() {
+	for index := range tp.ca {
+		tp.stat.Pushnum[index] = 0
+		tp.stat.Processnum[index] = 0
+	}
 }
