@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/gob"
 	"errors"
-	"flag"
 	"fmt"
 	"image"
 	"image/color"
@@ -27,58 +26,77 @@ import (
 
 	"github.com/OneOfOne/xxhash"
 	"github.com/boltdb/bolt"
+	"github.com/chyroc/go-ptr"
 	"golang.org/x/image/draw"
 )
 
-func main() {
-	src := flag.String("src", "", "src image path")
-	target := flag.String("target", "", "target image path")
-	lib := flag.String("lib", "", "image lib path")
-	worker := flag.Int("worker", 12, "worker thread num")
-	database := flag.String("database", "./database.bin", "cache datbase")
-	pixelsize := flag.Int("pixelsize", 64, "pic scale size per one pixel")
-	scalealg := flag.String("scalealg", "CatmullRom", "pic scale function NearestNeighbor/ApproxBiLinear/BiLinear/CatmullRom")
-	checkhash := flag.Bool("checkhash", true, "check database pic hash")
-	maxsize := flag.Int("maxsize", 4, "pic max size in GB")
-	libname := flag.String("libname", "default", "image lib name in database")
-	srcsize := flag.Int("srcsize", 128, "src image auto scale pixel size")
+type Request struct {
+	Src       string  // src image path
+	Target    string  // target image path
+	Lib       string  // image lib path
+	Worker    *int    // worker thread num
+	Database  *string // cache datbase
+	PixelSize *int    // pic scale size per one pixel
+	Scalealg  *string // pic scale function NearestNeighbor/ApproxBiLinear/BiLinear/CatmullRom
+	CheckHash *bool   //
+	MaxSize   *int    // pic max size in GB
+	LibName   *string //  image lib name in database
+	SrcSize   *int    // src image auto scale pixel size
+}
 
-	flag.Parse()
+func Mosaic(req *Request) error {
+	if req.Worker == nil {
+		req.Worker = ptr.Int(12)
+	}
+	if req.Database == nil {
+		req.Database = ptr.String("./database.bin")
+	}
+	if req.PixelSize == nil {
+		req.PixelSize = ptr.Int(64)
+	}
+	if req.Scalealg == nil {
+		req.Scalealg = ptr.String("CatmullRom")
+	}
+	if req.CheckHash == nil {
+		req.CheckHash = ptr.Bool(true)
+	}
+	if req.MaxSize == nil {
+		req.MaxSize = ptr.Int(4)
+	}
+	if req.LibName == nil {
+		req.LibName = ptr.String("default")
+	}
+	if req.SrcSize == nil {
+		req.SrcSize = ptr.Int(128)
+	}
 
-	if *src == "" || *target == "" || *lib == "" {
-		fmt.Println("need src target lib")
-		flag.Usage()
-		return
+	if getScaler(*req.Scalealg) == nil {
+		return fmt.Errorf("scalealg type error")
 	}
-	if getScaler(*scalealg) == nil {
-		fmt.Println("scalealg type error")
-		flag.Usage()
-		return
-	}
-	if !strings.HasSuffix(strings.ToLower(*target), ".png") &&
-		!strings.HasSuffix(strings.ToLower(*target), ".jpg") {
-		fmt.Println("target type error, png/jpg")
-		flag.Usage()
-		return
+
+	if !strings.HasSuffix(strings.ToLower(req.Target), ".png") &&
+		!strings.HasSuffix(strings.ToLower(req.Target), ".jpg") {
+		return fmt.Errorf("target type error, png/jpg")
 	}
 
 	log.Printf("start...")
-	log.Printf("src %s", *src)
-	log.Printf("target %s", *target)
-	log.Printf("lib %s", *lib)
+	log.Printf("src %s", req.Src)
+	log.Printf("target %s", req.Target)
+	log.Printf("lib %s", req.Lib)
 
-	err, srcimg, cachemap := parse_src(*src, *scalealg, *srcsize)
+	err, srcimg, cachemap := parse_src(req.Src, *req.Scalealg, *req.SrcSize)
 	if err != nil {
-		return
+		return err
 	}
-	err = load_lib(*lib, *worker, *database, *pixelsize, *scalealg, *checkhash, *libname)
+	err = load_lib(req.Lib, *req.Worker, *req.Database, *req.PixelSize, *req.Scalealg, *req.CheckHash, *req.LibName)
 	if err != nil {
-		return
+		return err
 	}
-	err = gen_target(srcimg, *target, *worker, *database, *pixelsize, *maxsize, *scalealg, *libname, cachemap)
+	err = gen_target(srcimg, req.Target, *req.Worker, *req.Database, *req.PixelSize, *req.MaxSize, *req.Scalealg, *req.LibName, cachemap)
 	if err != nil {
-		return
+		return err
 	}
+	return nil
 }
 
 type CacheInfo struct {
